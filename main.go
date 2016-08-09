@@ -6,26 +6,37 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"text/template"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/elb"
 )
 
-type Result struct {
-	Data interface{} `json:"data"`
-}
-
 func main() {
 	var (
-		discovery = flag.String("discovery", "", "type of discovery. Only ELB supported right now")
-		awsRegion = flag.String("aws-region", "eu-central-1", "AWS region")
+		discovery  = flag.String("discovery", "", "type of discovery. Only ELB supported right now")
+		awsRegion  = flag.String("aws-region", "eu-central-1", "AWS region")
+		outputType = flag.String("output", "json", "output type, one of (json|query)")
+		query      = flag.String("query", "", "template query")
 	)
 	flag.Parse()
 
+	printer := func(val interface{}) error {
+		switch *outputType {
+		case "query":
+			return template.Must(template.New("r").Parse(*query)).Execute(os.Stdout, val)
+		default:
+			out := struct {
+				Data interface{} `json:"data"`
+			}{val}
+			return json.NewEncoder(os.Stdout).Encode(out)
+		}
+	}
+
 	switch *discovery {
 	case "ELB":
-		err := getAllElasticLoadBalancers(*awsRegion)
+		err := getAllElasticLoadBalancers(*awsRegion, printer)
 		if err != nil {
 			log.Printf("Could not descibe load balancers: %v", err)
 		}
@@ -35,7 +46,7 @@ func main() {
 	}
 }
 
-func getAllElasticLoadBalancers(awsRegion string) error {
+func getAllElasticLoadBalancers(awsRegion string, printer func(val interface{}) error) error {
 	svc := elb.New(session.New(), aws.NewConfig().WithRegion(awsRegion))
 	params := &elb.DescribeLoadBalancersInput{}
 	resp, err := svc.DescribeLoadBalancers(params)
@@ -44,19 +55,11 @@ func getAllElasticLoadBalancers(awsRegion string) error {
 		return fmt.Errorf("reading ELBs in region %q :%v", awsRegion, err)
 	}
 
-	elbs := []string{}
+	elbs := make([]string, 0, len(resp.LoadBalancerDescriptions))
 
 	for _, elb := range resp.LoadBalancerDescriptions {
-		elbs = append(elbs, "{#LOADBALANCERNAME}:LoadBalancerName="+(*elb.LoadBalancerName))
+		elbs = append(elbs, *elb.LoadBalancerName)
 	}
 
-	r := Result{Data: elbs}
-	b, err := json.Marshal(r)
-
-	if err != nil {
-		return fmt.Errorf("error marshaling", err)
-	}
-
-	os.Stdout.Write(b)
-	return nil
+	return printer(elbs)
 }
